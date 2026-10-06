@@ -52,6 +52,26 @@ export default function App() {
   const [intervalVal, setIntervalVal] = useState('1 Hari');
   const [history, setHistory] = useState([]);
 
+  // ─── AMBIL RIWAYAT DARI DATABASE SQLITE ───
+  const fetchHistory = async () => {
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/history');
+      if (!response.ok) throw new Error('Gagal mengambil riwayat');
+      const dataHistory = await response.json();
+      if (Array.isArray(dataHistory)) {
+        setHistory(dataHistory);
+      }
+    } catch (err) {
+      console.error('Error fetching history:', err);
+    }
+  };
+
+  // Ambil riwayat dari SQLite saat halaman pertama kali dimuat
+  useEffect(() => {
+    fetchHistory();
+  }, []);
+
+  // ─── EKSEKUSI PREDIKSI ───
   const runPrediction = () => {
     setLoading(true);
     setError(null);
@@ -60,15 +80,8 @@ export default function App() {
       .then((d) => {
         if (d?.error) throw new Error(d.error);
         setData(d);
-        setHistory((prev) => [{
-          id: Date.now(),
-          time: new Date().toLocaleTimeString('id-ID'),
-          date: new Date().toLocaleDateString('id-ID'),
-          interval: intervalVal,
-          predicted: d.prediction?.forecast_price ?? 0,
-          actual: d.market_data?.current_price ?? 0,
-          target: String(d.prediction?.target_date ?? '-'),
-        }, ...prev.slice(0, 9)]);
+        // Panggil ulang riwayat dari database SQLite agar tabel langsung ter-update
+        fetchHistory();
         setLoading(false);
       })
       .catch((e) => { setError(e.message); setLoading(false); });
@@ -87,14 +100,11 @@ export default function App() {
   const rsiLabel = !market ? '-' : market.rsi_14 > 70 ? 'Overbought' : market.rsi_14 < 30 ? 'Oversold' : 'Neutral';
 
   // ── 1 grafik, 2 line ──────────────────────────────────────────────────
-  // labels: tanggal historis + 1 slot untuk titik prediksi
   const predLabel = pred ? (pred.target_date?.split(' ')[0] ?? 'Besok') : null;
   const combinedLabels = predLabel ? [...chart.labels, predLabel] : chart.labels;
 
-  // line 1 — harga aktual: panjang sama dengan labels historis, slot terakhir null
   const actualLine = pred ? [...chart.prices, null] : [...chart.prices];
 
-  // line 2 — prediksi: semua null, bridge dari harga terakhir ke titik prediksi
   const predLine = pred && chart.prices.length > 0
     ? [...Array(chart.prices.length - 1).fill(null), chart.prices[chart.prices.length - 1], pred.forecast_price]
     : [];
@@ -280,7 +290,6 @@ export default function App() {
 
         {/* ─── 1 GRAFIK 2 LINE ─── */}
         <div style={{ background: '#0f0f28', border: '1px solid rgba(153,69,255,0.18)', borderRadius: 16, padding: '20px 24px' }}>
-          {/* Header grafik */}
           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16 }}>
             <div>
               <p style={{ fontWeight: 700, fontSize: 14, color: '#e5e7eb' }}>Harga SOL — Aktual &amp; Prediksi LSTM</p>
@@ -298,7 +307,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Canvas */}
           <div style={{ height: 300 }}>
             {hasData ? (
               <Line data={combinedData} options={chartOptions} />
@@ -310,7 +318,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* ─── HISTORY TABLE ─── */}
+        {/* ─── HISTORY TABLE (PERMANENT FROM SQLITE) ─── */}
         <div style={{ background: '#0f0f28', border: '1px solid rgba(153,69,255,0.18)', borderRadius: 16, padding: '20px 22px' }}>
           <p style={{ fontWeight: 700, fontSize: 14, color: '#e5e7eb', marginBottom: 14 }}>📋 Riwayat Hasil Prediksi Sistem</p>
           {history.length === 0 ? (
@@ -327,16 +335,30 @@ export default function App() {
                 </thead>
                 <tbody>
                   {history.map((row, i) => {
-                    const diff = row.predicted - row.actual;
+                    const diff = row.selisih ?? (row.prediksi_lstm - row.harga_saat_ini);
                     const dUp = diff >= 0;
                     return (
-                      <tr key={row.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)', background: i === 0 ? 'rgba(153,69,255,0.06)' : 'transparent' }}>
-                        <td style={td}><span style={{ color: '#e5e7eb' }}>{row.time}</span><span style={{ color: '#4b5563', marginLeft: 6, fontSize: 10 }}>{row.date}</span></td>
-                        <td style={td}><span style={{ background: 'rgba(153,69,255,0.15)', color: SOL_PURPLE, borderRadius: 4, padding: '2px 8px', fontSize: 10, fontWeight: 600 }}>{row.interval}</span></td>
-                        <td style={{ ...td, color: '#e5e7eb', fontFamily: 'monospace' }}>{'$' + row.actual.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
-                        <td style={{ ...td, color: SOL_PURPLE, fontFamily: 'monospace', fontWeight: 700 }}>{'$' + row.predicted.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
-                        <td style={{ ...td, color: dUp ? SOL_GREEN : '#f87171', fontFamily: 'monospace', fontWeight: 600 }}>{(dUp ? '+' : '') + diff.toFixed(2)}</td>
-                        <td style={{ ...td, color: '#e2e8f0', fontFamily: 'monospace', fontSize: 11 }}>{row.target || '-'}</td>
+                      <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)', background: i === 0 ? 'rgba(153,69,255,0.06)' : 'transparent' }}>
+                        <td style={td}>
+                          <span style={{ color: '#e5e7eb' }}>{row.waktu}</span>
+                        </td>
+                        <td style={td}>
+                          <span style={{ background: 'rgba(153,69,255,0.15)', color: SOL_PURPLE, borderRadius: 4, padding: '2px 8px', fontSize: 10, fontWeight: 600 }}>
+                            {row.interval}
+                          </span>
+                        </td>
+                        <td style={{ ...td, color: '#e5e7eb', fontFamily: 'monospace' }}>
+                          {'$' + Number(row.harga_saat_ini).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+                        <td style={{ ...td, color: SOL_PURPLE, fontFamily: 'monospace', fontWeight: 700 }}>
+                          {'$' + Number(row.prediksi_lstm).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+                        <td style={{ ...td, color: dUp ? SOL_GREEN : '#f87171', fontFamily: 'monospace', fontWeight: 600 }}>
+                          {(dUp ? '+' : '') + Number(diff).toFixed(2)}
+                        </td>
+                        <td style={{ ...td, color: '#e2e8f0', fontFamily: 'monospace', fontSize: 11 }}>
+                          {row.target_tanggal || '-'}
+                        </td>
                       </tr>
                     );
                   })}

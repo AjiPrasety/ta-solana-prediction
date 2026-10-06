@@ -7,6 +7,7 @@ import tensorflow as tf
 from sklearn.preprocessing import MinMaxScaler
 from datetime import datetime, timedelta, timezone
 import os
+import sqlite3
 
 app = FastAPI(title="Solana LSTM Prediction API")
 
@@ -20,6 +21,32 @@ app.add_middleware(
 )
 
 MODEL_NAME = 'model_solana.h5'
+DB_NAME = 'predictions.db'
+
+# --- INISIALISASI DATABASE SQLITE ---
+def init_db():
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                waktu TEXT,
+                interval TEXT,
+                harga_saat_ini REAL,
+                prediksi_lstm REAL,
+                selisih REAL,
+                target_tanggal TEXT
+            )
+        ''')
+        conn.commit()
+        conn.close()
+        print(">>> SUCCESS: Database SQLite siap digunakan!")
+    except Exception as db_err:
+        print(f">>> ERROR DATABASE: {str(db_err)}")
+
+# Jalankan inisialisasi tabel database
+init_db()
 
 # Muat model LSTM dengan penanganan fleksibel untuk lintas versi Keras
 try:
@@ -58,6 +85,34 @@ except Exception as e:
 @app.get("/")
 def home():
     return {"message": "Solana LSTM API is running", "model_status": model_status}
+
+# --- ENDPOINT BARU: AMBIL SELURUH RIWAYAT DARI SQLITE ---
+@app.get("/api/history")
+def get_history():
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT waktu, interval, harga_saat_ini, prediksi_lstm, selisih, target_tanggal 
+            FROM history 
+            ORDER BY id DESC
+        """)
+        rows = cursor.fetchall()
+        conn.close()
+
+        history_list = []
+        for row in rows:
+            history_list.append({
+                "waktu": row[0],
+                "interval": row[1],
+                "harga_saat_ini": row[2],
+                "prediksi_lstm": row[3],
+                "selisih": row[4],
+                "target_tanggal": row[5]
+            })
+        return history_list
+    except Exception as err:
+        return {"error": f"Gagal mengambil riwayat database: {str(err)}"}
 
 @app.get("/api/predict")
 def get_prediction():
@@ -130,6 +185,25 @@ def get_prediction():
         waktu_wib = datetime.now(timezone.utc) + timedelta(hours=7)
         target_wib = waktu_wib + timedelta(days=1)
 
+        # Format teks untuk disimpan ke database
+        str_waktu = waktu_wib.strftime('%H.%M.%S %d/%m/%Y')
+        str_target = target_wib.strftime('%Y-%m-%d %H:%M WIB')
+        selisih_val = round(forecast_1d - harga_sekarang, 2)
+        interval_val = "1 Hari"
+
+        # --- SIMPAN SECARA OTOMATIS KE SQLITE ---
+        try:
+            conn = sqlite3.connect(DB_NAME)
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO history (waktu, interval, harga_saat_ini, prediksi_lstm, selisih, target_tanggal)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (str_waktu, interval_val, round(harga_sekarang, 2), round(forecast_1d, 2), selisih_val, str_target))
+            conn.commit()
+            conn.close()
+        except Exception as db_insert_err:
+            print(f">>> ERROR INSERT SQLITE: {str(db_insert_err)}")
+
         # Histori Grafik
         historis_aktual = features_exact['Close'].tail(15).astype(float).tolist()
         historis_label = features_exact.tail(15).index.strftime('%Y-%m-%d').tolist()
@@ -144,7 +218,7 @@ def get_prediction():
             },
             "prediction": {
                 "forecast_price": forecast_1d,
-                "target_date": target_wib.strftime('%Y-%m-%d %H:%M WIB')
+                "target_date": str_target
             },
             "chart_data": {
                 "labels": historis_label,
