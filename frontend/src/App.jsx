@@ -14,7 +14,7 @@ import {
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend, Filler);
 
 const SOL_GREEN = '#14F195';
-const SOL_PURPLE = '#9945FF';
+const SOL_PURPLE = '#A855F7';
 
 function SolanaIcon({ size = 32 }) {
   return (
@@ -45,33 +45,51 @@ const lbl = { fontSize: 10, color: '#6b7280', textTransform: 'uppercase', letter
 const val = { fontSize: 26, fontWeight: 900, lineHeight: 1.1, letterSpacing: '-0.02em' };
 const td = { padding: '10px 12px', verticalAlign: 'middle' };
 
+const formatVolumeCMC = (vol) => {
+  if (!vol) return '—';
+  if (vol >= 1e9) return '$' + (vol / 1e9).toFixed(2) + 'B';
+  return '$' + (vol / 1e6).toFixed(1) + 'M';
+};
+
 export default function App() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [intervalVal, setIntervalVal] = useState('1 Hari');
   const [history, setHistory] = useState([]);
+  const [hasPredicted, setHasPredicted] = useState(false);
 
-  // ─── AMBIL RIWAYAT DARI DATABASE SQLITE ───
+  // ─── 1. AMBIL RIWAYAT DARI DATABASE SQLITE ───
   const fetchHistory = async () => {
     try {
       const response = await fetch('http://127.0.0.1:8000/api/history');
       if (!response.ok) throw new Error('Gagal mengambil riwayat');
       const dataHistory = await response.json();
-      if (Array.isArray(dataHistory)) {
-        setHistory(dataHistory);
-      }
+      if (Array.isArray(dataHistory)) setHistory(dataHistory);
     } catch (err) {
       console.error('Error fetching history:', err);
     }
   };
 
-  // Ambil riwayat dari SQLite saat halaman pertama kali dimuat
+  // ─── 2. AMBIL DATA PASAR UTAMA UNTUK TAMPILAN AWAL ───
+  const fetchInitialMarketData = async () => {
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/predict');
+      if (!response.ok) throw new Error('Gagal memuat data pasar');
+      const initialData = await response.json();
+      if (initialData?.error) throw new Error(initialData.error);
+      setData(initialData);
+    } catch (err) {
+      console.error('Initial market load error:', err.message);
+    }
+  };
+
   useEffect(() => {
     fetchHistory();
+    fetchInitialMarketData();
   }, []);
 
-  // ─── EKSEKUSI PREDIKSI ───
+  // ─── 3. EKSEKUSI PREDIKSI MANUAL SAAT TOMBOL DIKLIK ───
   const runPrediction = () => {
     setLoading(true);
     setError(null);
@@ -80,17 +98,15 @@ export default function App() {
       .then((d) => {
         if (d?.error) throw new Error(d.error);
         setData(d);
-        // Panggil ulang riwayat dari database SQLite agar tabel langsung ter-update
+        setHasPredicted(true);
         fetchHistory();
         setLoading(false);
       })
       .catch((e) => { setError(e.message); setLoading(false); });
   };
 
-  useEffect(() => { runPrediction(); }, []);
-
   const market = data?.market_data ?? null;
-  const pred = data?.prediction ?? null;
+  const pred = hasPredicted ? (data?.prediction ?? null) : null;
   const chart = data?.chart_data ?? { labels: [], prices: [] };
 
   const isUp = market ? market.price_change >= 0 : true;
@@ -99,47 +115,59 @@ export default function App() {
   const fPct = market?.current_price > 0 ? ((fDelta / market.current_price) * 100).toFixed(2) : '0.00';
   const rsiLabel = !market ? '-' : market.rsi_14 > 70 ? 'Overbought' : market.rsi_14 < 30 ? 'Oversold' : 'Neutral';
 
-  // ── 1 grafik, 2 line ──────────────────────────────────────────────────
-  const predLabel = pred ? (pred.target_date?.split(' ')[0] ?? 'Besok') : null;
+  const isPredUp = fDelta > 0;
+  const isPredDown = fDelta < 0;
+  const predDirectionLabel = !pred ? null : isPredUp ? '▲ Naik' : isPredDown ? '▼ Turun' : '► Stabil';
+  const predDirectionColor = isPredUp ? SOL_GREEN : isPredDown ? '#f87171' : '#9ca3af';
+
+  // ─── PENYUSUNAN GARIS GRAFIK SMOOTH & CONTRAST ───
+  const predLabel = pred ? (pred.target_date?.split(' ')[0] ?? 'Target') : null;
   const combinedLabels = predLabel ? [...chart.labels, predLabel] : chart.labels;
 
   const actualLine = pred ? [...chart.prices, null] : [...chart.prices];
 
-  const predLine = pred && chart.prices.length > 0
-    ? [...Array(chart.prices.length - 1).fill(null), chart.prices[chart.prices.length - 1], pred.forecast_price]
+  const fullPredPrices = (pred && chart.prices.length > 0)
+    ? [...chart.prices.slice(0, -1), chart.prices[chart.prices.length - 1], pred.forecast_price]
     : [];
+
+  const datasetsList = [
+    {
+      label: 'Harga Aktual SOL',
+      data: actualLine,
+      borderColor: SOL_GREEN,
+      backgroundColor: 'transparent',
+      tension: 0.4, // Kurva mulus halus
+      borderWidth: 2,
+      pointRadius: 2,
+      pointBackgroundColor: SOL_GREEN,
+      pointBorderColor: '#0b0b1e',
+      pointBorderWidth: 1,
+      fill: false,
+      order: 2, // Layer belakang
+    }
+  ];
+
+  if (hasPredicted && fullPredPrices.length > 0) {
+    datasetsList.push({
+      label: 'Prediksi LSTM',
+      data: fullPredPrices,
+      borderColor: SOL_PURPLE,
+      backgroundColor: 'transparent',
+      borderDash: [6, 4],
+      tension: 0.4,
+      borderWidth: 2.5,
+      pointRadius: (ctx) => ctx.dataIndex === combinedLabels.length - 1 ? 8 : 2,
+      pointBackgroundColor: SOL_PURPLE,
+      pointBorderColor: '#ffffff',
+      pointBorderWidth: 2,
+      fill: false,
+      order: 1, // Layer depan menyala
+    });
+  }
 
   const combinedData = {
     labels: combinedLabels,
-    datasets: [
-      {
-        label: 'Harga Aktual',
-        data: actualLine,
-        borderColor: SOL_GREEN,
-        backgroundColor: (ctx) => {
-          const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, ctx.chart.height);
-          g.addColorStop(0, 'rgba(20,241,149,0.20)');
-          g.addColorStop(1, 'rgba(20,241,149,0.00)');
-          return g;
-        },
-        tension: 0.4, borderWidth: 2.5,
-        pointRadius: 4, pointBackgroundColor: SOL_GREEN,
-        pointBorderColor: '#0b0b1e', pointBorderWidth: 2,
-        fill: true, spanGaps: false,
-      },
-      {
-        label: 'Prediksi LSTM',
-        data: predLine,
-        borderColor: SOL_PURPLE,
-        backgroundColor: 'transparent',
-        borderDash: [6, 4],
-        tension: 0.2, borderWidth: 2.5,
-        pointRadius: (ctx) => ctx.dataIndex === combinedLabels.length - 1 ? 8 : 0,
-        pointBackgroundColor: SOL_PURPLE,
-        pointBorderColor: '#fff', pointBorderWidth: 2,
-        fill: false, spanGaps: false,
-      }
-    ]
+    datasets: datasetsList
   };
 
   const chartOptions = {
@@ -153,7 +181,7 @@ export default function App() {
       },
       tooltip: {
         backgroundColor: '#0f0f23',
-        borderColor: 'rgba(153,69,255,0.4)',
+        borderColor: 'rgba(168,85,247,0.4)',
         borderWidth: 1,
         titleColor: '#d1d5db',
         bodyColor: '#e5e7eb',
@@ -241,7 +269,6 @@ export default function App() {
       {/* ─── MAIN ─── */}
       <main style={{ flex: 1, padding: '24px 28px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 20 }}>
 
-        {/* Error banner */}
         {error && (
           <div style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: 12, padding: '14px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
             <div>
@@ -254,8 +281,9 @@ export default function App() {
           </div>
         )}
 
-        {/* 4 metric cards */}
+        {/* 4 METRIC CARDS */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14 }}>
+          {/* Card 1: Live Price */}
           <div style={cardStyle(SOL_GREEN)}>
             <div style={topBar(SOL_GREEN)} />
             <p style={lbl}>Harga Live SOL/USD</p>
@@ -264,6 +292,8 @@ export default function App() {
               {market ? (isUp ? '▲ ' : '▼ ') + Math.abs(market.price_change_percent).toFixed(2) + '% (24j)' : '—'}
             </p>
           </div>
+
+          {/* Card 2: Prediction (Hanya Strip — Sebelum Diklik) */}
           <div style={cardStyle(SOL_PURPLE)}>
             <div style={topBar(SOL_PURPLE)} />
             <p style={lbl}>Prediksi LSTM Besok</p>
@@ -272,42 +302,55 @@ export default function App() {
               {pred ? (fUp ? '▲ +' : '▼ ') + fDelta.toFixed(2) + ' (' + fPct + '%)' : '—'}
             </p>
           </div>
+
+          {/* Card 3: Volume */}
           <div style={cardStyle('#60a5fa')}>
             <div style={topBar('#60a5fa')} />
             <p style={lbl}>Volume 24j</p>
-            <p style={{ ...val, color: '#93c5fd' }}>{market ? '$' + (market.volume_24h / 1e6).toFixed(1) + 'M' : '—'}</p>
+            <p style={{ ...val, color: '#93c5fd' }}>{market ? formatVolumeCMC(market.volume_24h) : '—'}</p>
             <p style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>Market volume harian</p>
           </div>
+
+          {/* Card 4: RSI */}
           <div style={cardStyle('#fbbf24')}>
             <div style={topBar('#fbbf24')} />
-            <p style={lbl}>RSI (14)</p>
+            <p style={lbl}>RSI (14) &amp; Sinyal</p>
             <p style={{ ...val, color: '#fbbf24' }}>{market ? market.rsi_14.toFixed(2) : '—'}</p>
-            <p style={{ fontSize: 11, fontWeight: 600, marginTop: 4, color: market?.rsi_14 > 70 ? '#f87171' : market?.rsi_14 < 30 ? SOL_GREEN : '#9ca3af' }}>
-              {rsiLabel}
-            </p>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: market?.rsi_14 > 70 ? '#f87171' : market?.rsi_14 < 30 ? SOL_GREEN : '#9ca3af' }}>
+                {rsiLabel}
+              </span>
+              {predDirectionLabel && (
+                <span style={{ fontSize: 11, fontWeight: 700, color: predDirectionColor, background: 'rgba(255,255,255,0.05)', padding: '2px 6px', borderRadius: 4 }}>
+                  {predDirectionLabel}
+                </span>
+              )}
+            </div>
           </div>
         </div>
 
-        {/* ─── 1 GRAFIK 2 LINE ─── */}
+        {/* ─── 1 KOTAK GRAFIK ─── */}
         <div style={{ background: '#0f0f28', border: '1px solid rgba(153,69,255,0.18)', borderRadius: 16, padding: '20px 24px' }}>
           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16 }}>
             <div>
-              <p style={{ fontWeight: 700, fontSize: 14, color: '#e5e7eb' }}>Harga SOL — Aktual &amp; Prediksi LSTM</p>
+              <p style={{ fontWeight: 700, fontSize: 14, color: '#e5e7eb' }}>Harga SOL — Perbandingan Aktual vs Prediksi LSTM</p>
               <p style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>15 hari historis + proyeksi 1 hari ke depan</p>
             </div>
             <div style={{ display: 'flex', gap: 16, flexShrink: 0 }}>
               <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: SOL_GREEN }}>
-                <span style={{ display: 'inline-block', width: 20, height: 2.5, background: SOL_GREEN, borderRadius: 2 }} />
-                Aktual
+                <span style={{ display: 'inline-block', width: 20, height: 2, background: SOL_GREEN, borderRadius: 2 }} />
+                Harga Aktual
               </span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: SOL_PURPLE }}>
-                <span style={{ display: 'inline-block', width: 20, height: 0, borderTop: '2.5px dashed ' + SOL_PURPLE }} />
-                Prediksi
-              </span>
+              {hasPredicted && (
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: SOL_PURPLE }}>
+                  <span style={{ display: 'inline-block', width: 20, height: 0, borderTop: '2px dashed ' + SOL_PURPLE }} />
+                  Prediksi LSTM
+                </span>
+              )}
             </div>
           </div>
 
-          <div style={{ height: 300 }}>
+          <div style={{ height: 320 }}>
             {hasData ? (
               <Line data={combinedData} options={chartOptions} />
             ) : (
