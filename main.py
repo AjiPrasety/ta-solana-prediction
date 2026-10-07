@@ -51,7 +51,6 @@ init_db()
 # Muat model LSTM dengan penanganan fleksibel untuk lintas versi Keras
 try:
     if os.path.exists(MODEL_NAME):
-        # Aktifkan penanganan objek Keras 3 jika tersedia
         if hasattr(tf.keras.config, 'enable_unsafe_deserialization'):
             tf.keras.config.enable_unsafe_deserialization()
 
@@ -86,7 +85,7 @@ except Exception as e:
 def home():
     return {"message": "Solana LSTM API is running", "model_status": model_status}
 
-# --- ENDPOINT BARU: AMBIL SELURUH RIWAYAT DARI SQLITE ---
+# --- ENDPOINT AMBIL SELURUH RIWAYAT DARI SQLITE ---
 @app.get("/api/history")
 def get_history():
     try:
@@ -114,8 +113,9 @@ def get_history():
     except Exception as err:
         return {"error": f"Gagal mengambil riwayat database: {str(err)}"}
 
+# --- ENDPOINT PREDIKSI MULTI-STEP (MENERIMA PARAMETER DAYS) ---
 @app.get("/api/predict")
-def get_prediction():
+def get_prediction(days: int = 1):
     if model is None:
         return {"error": f"Model LSTM tidak siap. Status: {model_status}"}
 
@@ -126,7 +126,6 @@ def get_prediction():
         if df_raw.empty:
             return {"error": "Gagal mengambil data dari Yahoo Finance."}
 
-        # Amankan multi-index jika yfinance mengembalikannya
         if isinstance(df_raw.columns, pd.MultiIndex):
             df_raw.columns = df_raw.columns.get_level_values(0)
             
@@ -149,13 +148,9 @@ def get_prediction():
         df['BB_Upper'] = ma20 + (2 * std20)
         df['BB_Lower'] = ma20 - (2 * std20)
         
-        # Bersihkan NaN
         df.dropna(inplace=True)
-        
-        # Susun 9 Fitur Baku
         features_exact = df[['Open', 'High', 'Low', 'Close', 'RSI', 'MACD', 'MACD_Signal', 'BB_Upper', 'BB_Lower']]
         
-        # Metrik Pasar Terbaru
         harga_sekarang = float(features_exact['Close'].iloc[-1])
         harga_kemarin = float(features_exact['Close'].iloc[-2])
         perubahan_harga = harga_sekarang - harga_kemarin
@@ -173,38 +168,59 @@ def get_prediction():
 
         current_batch = scaled_data[-prediction_window:].reshape(1, prediction_window, 9)
         
-        # Eksekusi Prediksi
-        pred_scaled = model.predict(current_batch, verbose=0)
-        
-        # De-normalisasi khusus harga Close (index 3)
-        dummy_future = np.zeros((1, 9))
-        dummy_future[0, 3] = pred_scaled[0, 0]
-        forecast_1d = float(scaler.inverse_transform(dummy_future)[0, 3])
-        
-        # Waktu WIB
-        waktu_wib = datetime.now(timezone.utc) + timedelta(hours=7)
-        target_wib = waktu_wib + timedelta(days=1)
+        # --- PROSES MULTI-STEP PREDICTION BERDASARKAN HARI (1, 3, ATAU 7) ---
+        temp_batch = current_batch.copy()
+        forecast_final = harga_sekarang
 
-        # Format teks untuk disimpan ke database
+        for _ in range(days):
+            pred_scaled = model.predict(temp_batch, verbose=0)
+            
+            # De-normalisasi nilai Close
+            dummy_future = np.zeros((1, 9))
+            dummy_future[0, 3] = pred_scaled[0, 0]
+            forecast_final = float(scaler.inverse_transform(dummy_future)[0, 3])
+
+            # Update sliding window batch untuk iterasi hari berikutnya
+            new_row = temp_batch[0, -1, :].copy()
+            new_row[3] = pred_scaled[0, 0]
+            temp_batch = np.append(temp_batch[:, 1:, :], [[new_row]], axis=1)
+
+        # Hitung waktu target sesuai parameter days
+        waktu_wib = datetime.now(timezone.utc) + timedelta(hours=7)
+        target_wib = waktu_wib + timedelta(days=days)
+
         str_waktu = waktu_wib.strftime('%H.%M.%S %d/%m/%Y')
         str_target = target_wib.strftime('%Y-%m-%d %H:%M WIB')
-        selisih_val = round(forecast_1d - harga_sekarang, 2)
-        interval_val = "1 Hari"
+        selisih_val = round(forecast_final - harga_sekarang, 2)
+        interval_val = f"{days} Hari"
 
-        # --- SIMPAN SECARA OTOMATIS KE SQLITE ---
+        # --- SIMPAN KE SQLITE ---
         try:
             conn = sqlite3.connect(DB_NAME)
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO history (waktu, interval, harga_saat_ini, prediksi_lstm, selisih, target_tanggal)
                 VALUES (?, ?, ?, ?, ?, ?)
-            """, (str_waktu, interval_val, round(harga_sekarang, 2), round(forecast_1d, 2), selisih_val, str_target))
+            """, (str_waktu, interval_val, round(harga_sekarang, 2), round(forecast_final, 2), selisih_val, str_target))
             conn.commit()
             conn.close()
         except Exception as db_insert_err:
             print(f">>> ERROR INSERT SQLITE: {str(db_insert_err)}")
 
-        # Histori Grafik
+        # --- HITUNG PREDIKSI UNTUK SELURUH DATA HISTORIS (UNTUK GRAFIK BERHIMPITAN) ---
+        historis_prediksi = []
+        for i in range(len(scaled_data) - 15, len(scaled_data)):
+            batch_hist = scaled_data[i-prediction_window:i].reshape(1, prediction_window, 9)
+            pred_h = model.predict(batch_hist, verbose=0)
+            
+            dummy_h = np.zeros((1, 9))
+            dummy_h[0, 3] = pred_h[0, 0]
+            val_h = float(scaler.inverse_transform(dummy_h)[0, 3])
+            historis_prediksi.append(val_h)
+
+        # Tambahkan nilai prediksi target hari mendatang
+        historis_prediksi.append(forecast_final)
+
         historis_aktual = features_exact['Close'].tail(15).astype(float).tolist()
         historis_label = features_exact.tail(15).index.strftime('%Y-%m-%d').tolist()
 
@@ -217,12 +233,13 @@ def get_prediction():
                 "rsi_14": rsi_sekarang
             },
             "prediction": {
-                "forecast_price": forecast_1d,
+                "forecast_price": forecast_final,
                 "target_date": str_target
             },
             "chart_data": {
                 "labels": historis_label,
-                "prices": historis_aktual
+                "prices": historis_aktual,
+                "predicted_prices": historis_prediksi
             }
         }
     except Exception as internal_err:

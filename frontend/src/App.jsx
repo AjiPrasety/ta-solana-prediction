@@ -74,7 +74,7 @@ export default function App() {
   // ─── 2. AMBIL DATA PASAR UTAMA UNTUK TAMPILAN AWAL ───
   const fetchInitialMarketData = async () => {
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/predict');
+      const response = await fetch('http://127.0.0.1:8000/api/predict?days=1');
       if (!response.ok) throw new Error('Gagal memuat data pasar');
       const initialData = await response.json();
       if (initialData?.error) throw new Error(initialData.error);
@@ -89,11 +89,14 @@ export default function App() {
     fetchInitialMarketData();
   }, []);
 
-  // ─── 3. EKSEKUSI PREDIKSI MANUAL SAAT TOMBOL DIKLIK ───
+  // ─── 3. EKSEKUSI PREDIKSI MANUAL SESUAI INTERVAL (1, 3, ATAU 7 HARI) ───
   const runPrediction = () => {
     setLoading(true);
     setError(null);
-    fetch('http://127.0.0.1:8000/api/predict')
+
+    const daysNum = parseInt(intervalVal) || 1;
+
+    fetch(`http://127.0.0.1:8000/api/predict?days=${daysNum}`)
       .then((r) => { if (!r.ok) throw new Error('Server error ' + r.status); return r.json(); })
       .then((d) => {
         if (d?.error) throw new Error(d.error);
@@ -107,7 +110,7 @@ export default function App() {
 
   const market = data?.market_data ?? null;
   const pred = hasPredicted ? (data?.prediction ?? null) : null;
-  const chart = data?.chart_data ?? { labels: [], prices: [] };
+  const chart = data?.chart_data ?? { labels: [], prices: [], predicted_prices: [] };
 
   const isUp = market ? market.price_change >= 0 : true;
   const fDelta = (market && pred) ? pred.forecast_price - market.current_price : 0;
@@ -120,48 +123,43 @@ export default function App() {
   const predDirectionLabel = !pred ? null : isPredUp ? '▲ Naik' : isPredDown ? '▼ Turun' : '► Stabil';
   const predDirectionColor = isPredUp ? SOL_GREEN : isPredDown ? '#f87171' : '#9ca3af';
 
-  // ─── PENYUSUNAN GARIS GRAFIK SMOOTH & CONTRAST ───
+  // ─── PENYUSUNAN GARIS GRAFIK BERHIMPITAN (FULL HISTORICAL PREDICTION) ───
   const predLabel = pred ? (pred.target_date?.split(' ')[0] ?? 'Target') : null;
   const combinedLabels = predLabel ? [...chart.labels, predLabel] : chart.labels;
 
+  // Garis 1: Harga Asli Solana (Aktual)
   const actualLine = pred ? [...chart.prices, null] : [...chart.prices];
 
-  const fullPredPrices = (pred && chart.prices.length > 0)
-    ? [...chart.prices.slice(0, -1), chart.prices[chart.prices.length - 1], pred.forecast_price]
-    : [];
+  // Garis 2: Harga Prediksi AI (LSTM) dari data historis
+  const predictedLine = (hasPredicted && chart.predicted_prices) ? chart.predicted_prices : [];
 
   const datasetsList = [
     {
-      label: 'Harga Aktual SOL',
+      label: 'Harga Asli Solana',
       data: actualLine,
-      borderColor: SOL_GREEN,
+      borderColor: '#e5e7eb',
       backgroundColor: 'transparent',
-      tension: 0.4, // Kurva mulus halus
+      tension: 0.2,
       borderWidth: 2,
       pointRadius: 2,
-      pointBackgroundColor: SOL_GREEN,
-      pointBorderColor: '#0b0b1e',
-      pointBorderWidth: 1,
+      pointBackgroundColor: '#e5e7eb',
       fill: false,
-      order: 2, // Layer belakang
+      order: 2,
     }
   ];
 
-  if (hasPredicted && fullPredPrices.length > 0) {
+  if (hasPredicted && predictedLine.length > 0) {
     datasetsList.push({
-      label: 'Prediksi LSTM',
-      data: fullPredPrices,
-      borderColor: SOL_PURPLE,
+      label: `Harga Prediksi (LSTM) - ${intervalVal}`,
+      data: predictedLine,
+      borderColor: SOL_GREEN,
       backgroundColor: 'transparent',
-      borderDash: [6, 4],
       tension: 0.4,
       borderWidth: 2.5,
-      pointRadius: (ctx) => ctx.dataIndex === combinedLabels.length - 1 ? 8 : 2,
-      pointBackgroundColor: SOL_PURPLE,
-      pointBorderColor: '#ffffff',
-      pointBorderWidth: 2,
+      pointRadius: (ctx) => ctx.dataIndex === combinedLabels.length - 1 ? 6 : 1.5,
+      pointBackgroundColor: SOL_GREEN,
       fill: false,
-      order: 1, // Layer depan menyala
+      order: 1,
     });
   }
 
@@ -181,7 +179,7 @@ export default function App() {
       },
       tooltip: {
         backgroundColor: '#0f0f23',
-        borderColor: 'rgba(168,85,247,0.4)',
+        borderColor: 'rgba(20,241,149,0.4)',
         borderWidth: 1,
         titleColor: '#d1d5db',
         bodyColor: '#e5e7eb',
@@ -235,7 +233,7 @@ export default function App() {
         </div>
 
         <div>
-          <p style={{ fontSize: 10, color: '#6b7280', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 12 }}>⚙ Configuration</p>
+          <p style={{ fontSize: 10, color: '#6b7280', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 12 }}>⚙ Dashboard</p>
           <label style={{ fontSize: 12, color: '#9ca3af', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
             <span>🕐</span> Time Interval
           </label>
@@ -255,7 +253,7 @@ export default function App() {
         >
           {loading ? (
             <><span style={{ width: 14, height: 14, border: '2px solid rgba(255,255,255,0.3)', borderTopColor: '#fff', borderRadius: '50%', display: 'inline-block', animation: 'spin 0.8s linear infinite' }} />Loading...</>
-          ) : 'Run Prediction'}
+          ) : 'Jalankan Prediksi'}
         </button>
 
         <div style={{ marginTop: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -269,6 +267,7 @@ export default function App() {
       {/* ─── MAIN ─── */}
       <main style={{ flex: 1, padding: '24px 28px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 20 }}>
 
+        {/* Error banner */}
         {error && (
           <div style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: 12, padding: '14px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
             <div>
@@ -293,10 +292,10 @@ export default function App() {
             </p>
           </div>
 
-          {/* Card 2: Prediction (Hanya Strip — Sebelum Diklik) */}
+          {/* Card 2: Prediction */}
           <div style={cardStyle(SOL_PURPLE)}>
             <div style={topBar(SOL_PURPLE)} />
-            <p style={lbl}>Prediksi LSTM Besok</p>
+            <p style={lbl}>Prediksi LSTM ({intervalVal})</p>
             <p style={{ ...val, color: SOL_PURPLE }}>{pred ? '$' + pred.forecast_price.toFixed(2) : '—'}</p>
             <p style={{ fontSize: 11, fontWeight: 600, color: fUp ? SOL_GREEN : '#f87171', marginTop: 4 }}>
               {pred ? (fUp ? '▲ +' : '▼ ') + fDelta.toFixed(2) + ' (' + fPct + '%)' : '—'}
@@ -305,7 +304,7 @@ export default function App() {
 
           {/* Card 3: Volume */}
           <div style={cardStyle('#60a5fa')}>
-            <div style={topBar('#60a5fa')} />
+            <div style={topBar('#60a5fa')}></div>
             <p style={lbl}>Volume 24j</p>
             <p style={{ ...val, color: '#93c5fd' }}>{market ? formatVolumeCMC(market.volume_24h) : '—'}</p>
             <p style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>Market volume harian</p>
@@ -313,7 +312,7 @@ export default function App() {
 
           {/* Card 4: RSI */}
           <div style={cardStyle('#fbbf24')}>
-            <div style={topBar('#fbbf24')} />
+            <div style={topBar('#fbbf24')}></div>
             <p style={lbl}>RSI (14) &amp; Sinyal</p>
             <p style={{ ...val, color: '#fbbf24' }}>{market ? market.rsi_14.toFixed(2) : '—'}</p>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
@@ -333,18 +332,18 @@ export default function App() {
         <div style={{ background: '#0f0f28', border: '1px solid rgba(153,69,255,0.18)', borderRadius: 16, padding: '20px 24px' }}>
           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16 }}>
             <div>
-              <p style={{ fontWeight: 700, fontSize: 14, color: '#e5e7eb' }}>Harga SOL — Perbandingan Aktual vs Prediksi LSTM</p>
-              <p style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>15 hari historis + proyeksi 1 hari ke depan</p>
+              <p style={{ fontWeight: 700, fontSize: 14, color: '#e5e7eb' }}>Harga SOL — Perbandingan Harga Asli vs Prediksi AI (LSTM)</p>
+              <p style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>15 hari historis + proyeksi {intervalVal} ke depan</p>
             </div>
             <div style={{ display: 'flex', gap: 16, flexShrink: 0 }}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: SOL_GREEN }}>
-                <span style={{ display: 'inline-block', width: 20, height: 2, background: SOL_GREEN, borderRadius: 2 }} />
-                Harga Aktual
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#e5e7eb' }}>
+                <span style={{ display: 'inline-block', width: 20, height: 2, background: '#e5e7eb', borderRadius: 2 }} />
+                Harga Asli Solana
               </span>
               {hasPredicted && (
-                <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: SOL_PURPLE }}>
-                  <span style={{ display: 'inline-block', width: 20, height: 0, borderTop: '2px dashed ' + SOL_PURPLE }} />
-                  Prediksi LSTM
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: SOL_GREEN }}>
+                  <span style={{ display: 'inline-block', width: 20, height: 2.5, background: SOL_GREEN, borderRadius: 2 }} />
+                  Harga Prediksi (LSTM)
                 </span>
               )}
             </div>
@@ -365,7 +364,7 @@ export default function App() {
         <div style={{ background: '#0f0f28', border: '1px solid rgba(153,69,255,0.18)', borderRadius: 16, padding: '20px 22px' }}>
           <p style={{ fontWeight: 700, fontSize: 14, color: '#e5e7eb', marginBottom: 14 }}>📋 Riwayat Hasil Prediksi Sistem</p>
           {history.length === 0 ? (
-            <p style={{ color: '#4b5563', fontSize: 12, textAlign: 'center', padding: '20px 0' }}>Belum ada riwayat. Klik "Run Prediction" untuk memulai.</p>
+            <p style={{ color: '#4b5563', fontSize: 12, textAlign: 'center', padding: '20px 0' }}>Belum ada riwayat. Klik "Jalankan Prediksi" untuk memulai.</p>
           ) : (
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
