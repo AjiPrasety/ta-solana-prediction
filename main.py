@@ -131,7 +131,7 @@ def get_prediction(days: int = 1):
             
         df = df_raw[['Open', 'High', 'Low', 'Close', 'Volume']].dropna().copy()
         
-        # 2. Hitung Indikator Teknikal Multivariate (9 Fitur Persis)
+        # 2. Hitung Indikator Teknikal Multivariate (10 Fitur Persis)
         delta = df['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -149,13 +149,15 @@ def get_prediction(days: int = 1):
         df['BB_Lower'] = ma20 - (2 * std20)
         
         df.dropna(inplace=True)
-        features_exact = df[['Open', 'High', 'Low', 'Close', 'RSI', 'MACD', 'MACD_Signal', 'BB_Upper', 'BB_Lower']]
+
+        # FITUR PERSIS DENGAN TRAINED MODEL COLAB (10 FITUR: OHLCV + RSI + MACD + MACD_Signal + BB_Upper + BB_Lower)
+        features_exact = df[['Open', 'High', 'Low', 'Close', 'Volume', 'RSI', 'MACD', 'MACD_Signal', 'BB_Upper', 'BB_Lower']]
         
         harga_sekarang = float(features_exact['Close'].iloc[-1])
         harga_kemarin = float(features_exact['Close'].iloc[-2])
         perubahan_harga = harga_sekarang - harga_kemarin
         persen_perubahan = (perubahan_harga / harga_kemarin) * 100
-        volume_sekarang = float(df['Volume'].iloc[-1])
+        volume_sekarang = float(features_exact['Volume'].iloc[-1])
         rsi_sekarang = float(features_exact['RSI'].iloc[-1])
 
         # 3. Normalisasi MinMax
@@ -166,7 +168,8 @@ def get_prediction(days: int = 1):
         if len(scaled_data) < prediction_window:
             return {"error": "Data historis tidak mencukupi untuk sliding window 24 hari."}
 
-        current_batch = scaled_data[-prediction_window:].reshape(1, prediction_window, 9)
+        # Shape batch awal: (1, 24, 10)
+        current_batch = scaled_data[-prediction_window:].reshape(1, prediction_window, 10)
         
         # --- PROSES MULTI-STEP PREDICTION BERDASARKAN HARI (1, 3, ATAU 7) ---
         temp_batch = current_batch.copy()
@@ -175,8 +178,8 @@ def get_prediction(days: int = 1):
         for _ in range(days):
             pred_scaled = model.predict(temp_batch, verbose=0)
             
-            # De-normalisasi nilai Close
-            dummy_future = np.zeros((1, 9))
+            # De-normalisasi nilai Close (Close berada pada indeks ke-3)
+            dummy_future = np.zeros((1, 10))
             dummy_future[0, 3] = pred_scaled[0, 0]
             forecast_final = float(scaler.inverse_transform(dummy_future)[0, 3])
 
@@ -210,10 +213,10 @@ def get_prediction(days: int = 1):
         # --- HITUNG PREDIKSI UNTUK SELURUH DATA HISTORIS (UNTUK GRAFIK BERHIMPITAN) ---
         historis_prediksi = []
         for i in range(len(scaled_data) - 15, len(scaled_data)):
-            batch_hist = scaled_data[i-prediction_window:i].reshape(1, prediction_window, 9)
+            batch_hist = scaled_data[i-prediction_window:i].reshape(1, prediction_window, 10)
             pred_h = model.predict(batch_hist, verbose=0)
             
-            dummy_h = np.zeros((1, 9))
+            dummy_h = np.zeros((1, 10))
             dummy_h[0, 3] = pred_h[0, 0]
             val_h = float(scaler.inverse_transform(dummy_h)[0, 3])
             historis_prediksi.append(val_h)
