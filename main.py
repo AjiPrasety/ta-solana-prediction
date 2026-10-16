@@ -113,7 +113,7 @@ def get_history():
     except Exception as err:
         return {"error": f"Gagal mengambil riwayat database: {str(err)}"}
 
-# --- ENDPOINT PREDIKSI MULTI-STEP (MENERIMA PARAMETER DAYS) ---
+# --- ENDPOINT PREDIKSI MULTI-STEP (7 FITUR + LOOKBACK HYPERPARAMETER DINAMIS) ---
 @app.get("/api/predict")
 def get_prediction(days: int = 1):
     if model is None:
@@ -131,27 +131,20 @@ def get_prediction(days: int = 1):
             
         df = df_raw[['Open', 'High', 'Low', 'Close', 'Volume']].dropna().copy()
         
-        # 2. Hitung Indikator Teknikal Multivariate (10 Fitur Persis)
+        # 2. Hitung Indikator Teknikal Multivariate (7 Fitur: OHLCV + RSI + MA20)
         delta = df['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
         df['RSI'] = 100 - (100 / (1 + rs))
         
-        exp1 = df['Close'].ewm(span=12, adjust=False).mean()
-        exp2 = df['Close'].ewm(span=26, adjust=False).mean()
-        df['MACD'] = exp1 - exp2
-        df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-        
-        ma20 = df['Close'].rolling(window=20).mean()
-        std20 = df['Close'].rolling(window=20).std()
-        df['BB_Upper'] = ma20 + (2 * std20)
-        df['BB_Lower'] = ma20 - (2 * std20)
+        # Indikator MA20 (Simple Moving Average 20 Hari menggantikan MACD/BB)
+        df['MA20'] = df['Close'].rolling(window=20).mean()
         
         df.dropna(inplace=True)
 
-        # FITUR PERSIS DENGAN TRAINED MODEL COLAB (10 FITUR: OHLCV + RSI + MACD + MACD_Signal + BB_Upper + BB_Lower)
-        features_exact = df[['Open', 'High', 'Low', 'Close', 'Volume', 'RSI', 'MACD', 'MACD_Signal', 'BB_Upper', 'BB_Lower']]
+        # 7 FITUR RESMI KONSISTEN DENGAN TRAINED MODEL COLAB
+        features_exact = df[['Open', 'High', 'Low', 'Close', 'Volume', 'RSI', 'MA20']]
         
         harga_sekarang = float(features_exact['Close'].iloc[-1])
         harga_kemarin = float(features_exact['Close'].iloc[-2])
@@ -160,16 +153,19 @@ def get_prediction(days: int = 1):
         volume_sekarang = float(features_exact['Volume'].iloc[-1])
         rsi_sekarang = float(features_exact['RSI'].iloc[-1])
 
-        # 3. Normalisasi MinMax
+        # 3. Normalisasi MinMax (7 Fitur)
         scaler = MinMaxScaler(feature_range=(0, 1))
         scaled_data = scaler.fit_transform(features_exact)
         
-        prediction_window = 24
-        if len(scaled_data) < prediction_window:
-            return {"error": "Data historis tidak mencukupi untuk sliding window 24 hari."}
+        # LOOKBACK HYPERPARAMETER (Pastikan angkanya sama persis dengan Colab, misal: 30)
+        LOOKBACK_WINDOW = 30
+        num_features = scaled_data.shape[1]  # 7 Fitur
+        
+        if len(scaled_data) < LOOKBACK_WINDOW:
+            return {"error": f"Data historis tidak mencukupi untuk sliding window {LOOKBACK_WINDOW} hari."}
 
-        # Shape batch awal: (1, 24, 10)
-        current_batch = scaled_data[-prediction_window:].reshape(1, prediction_window, 10)
+        # Shape batch awal: (1, LOOKBACK_WINDOW, 7)
+        current_batch = scaled_data[-LOOKBACK_WINDOW:].reshape(1, LOOKBACK_WINDOW, num_features)
         
         # --- PROSES MULTI-STEP PREDICTION BERDASARKAN HARI (1, 3, ATAU 7) ---
         temp_batch = current_batch.copy()
@@ -178,8 +174,8 @@ def get_prediction(days: int = 1):
         for _ in range(days):
             pred_scaled = model.predict(temp_batch, verbose=0)
             
-            # De-normalisasi nilai Close (Close berada pada indeks ke-3)
-            dummy_future = np.zeros((1, 10))
+            # De-normalisasi nilai Close (Close berada pada indeks ke-3 dari 7 kolom)
+            dummy_future = np.zeros((1, num_features))
             dummy_future[0, 3] = pred_scaled[0, 0]
             forecast_final = float(scaler.inverse_transform(dummy_future)[0, 3])
 
@@ -210,13 +206,13 @@ def get_prediction(days: int = 1):
         except Exception as db_insert_err:
             print(f">>> ERROR INSERT SQLITE: {str(db_insert_err)}")
 
-        # --- HITUNG PREDIKSI UNTUK SELURUH DATA HISTORIS (UNTUK GRAFIK BERHIMPITAN) ---
+        # --- HITUNG PREDIKSI UNTUK GRAFIK HISTORIS BERHIMPITAN ---
         historis_prediksi = []
         for i in range(len(scaled_data) - 15, len(scaled_data)):
-            batch_hist = scaled_data[i-prediction_window:i].reshape(1, prediction_window, 10)
+            batch_hist = scaled_data[i-LOOKBACK_WINDOW:i].reshape(1, LOOKBACK_WINDOW, num_features)
             pred_h = model.predict(batch_hist, verbose=0)
             
-            dummy_h = np.zeros((1, 10))
+            dummy_h = np.zeros((1, num_features))
             dummy_h[0, 3] = pred_h[0, 0]
             val_h = float(scaler.inverse_transform(dummy_h)[0, 3])
             historis_prediksi.append(val_h)
