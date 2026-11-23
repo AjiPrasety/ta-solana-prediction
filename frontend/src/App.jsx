@@ -260,7 +260,12 @@ export default function App() {
             <span>🕐</span> Time Interval
           </label>
           <select
-            value={intervalVal} onChange={(e) => setIntervalVal(e.target.value)}
+            value={intervalVal} onChange={(e) => {
+              setIntervalVal(e.target.value);
+              // Reset hasil prediksi agar tidak tampil hasil lama saat interval berubah
+              setHasPredicted(false);
+              setPredData(null);
+            }}
             style={{ width: '100%', background: '#161635', border: '1px solid rgba(153,69,255,0.25)', color: '#fff', borderRadius: 8, padding: '8px 12px', fontSize: 13, outline: 'none', cursor: 'pointer' }}
           >
             <option>1 Hari</option>
@@ -367,15 +372,12 @@ export default function App() {
 
         {/* RMSE CARD — hanya tampil setelah prediksi dijalankan */}
         {hasPredicted && pred && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(1,1fr)', gap: 14 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14 }}>
             <div style={cardStyle('#f472b6')}>
               <div style={topBar('#f472b6')} />
               <p style={lbl}>RMSE — Rata-rata Error Prediksi</p>
               <p style={{ ...val, color: '#f472b6' }}>
                 {pred.rmse !== null ? '$' + pred.rmse.toFixed(2) : '—'}
-              </p>
-              <p style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
-                Dihitung dari 20% data uji terakhir
               </p>
             </div>
           </div>
